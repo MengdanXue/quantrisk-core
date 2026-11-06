@@ -449,7 +449,7 @@ class TRIMA(BaseIndicator):
         display_name='三角移动平均线',
         category='trend',
         description='使用三角形权重分布的移动平均线',
-        formula='TRIMA = SMA(SMA(Close, n/2), n/2)',
+        formula='TRIMA = SMA(SMA(Close, ceil(n/2)), floor(n/2)+1)',
         required_columns=['close'],
         output_type='series',
         default_params={'period': 20},
@@ -471,10 +471,13 @@ class TRIMA(BaseIndicator):
         self.validate_data(data)
         close = data['close']
 
-        # 三角移动平均 = SMA(SMA)
-        half_period = int(self.period / 2) + 1
-        sma1 = close.rolling(window=half_period).mean()
-        return sma1.rolling(window=half_period).mean()
+        # 三角移动平均 = SMA(SMA)，两层窗口合计覆盖 period 根K线
+        if self.period % 2 == 0:
+            first, second = self.period // 2, self.period // 2 + 1
+        else:
+            first = second = (self.period + 1) // 2
+        sma1 = close.rolling(window=first).mean()
+        return sma1.rolling(window=second).mean()
 
 
 @indicator_registry.register('trend')
