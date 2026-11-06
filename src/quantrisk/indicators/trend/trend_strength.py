@@ -129,10 +129,11 @@ class Aroon(BaseIndicator):
         def periods_since_low(x):
             return self.period - x.argmin()
 
-        aroon_up = high.rolling(window=self.period + 1).apply(
-            periods_since_high, raw=True) / self.period * 100
-        aroon_down = low.rolling(window=self.period + 1).apply(
-            periods_since_low, raw=True) / self.period * 100
+        # Aroon = (n - 距极值周期数) / n * 100：极值出现在当根时为 100
+        aroon_up = (self.period - high.rolling(window=self.period + 1).apply(
+            periods_since_high, raw=True)) / self.period * 100
+        aroon_down = (self.period - low.rolling(window=self.period + 1).apply(
+            periods_since_low, raw=True)) / self.period * 100
 
         return pd.DataFrame({
             'Aroon_Up': aroon_up,
