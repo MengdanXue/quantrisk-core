@@ -87,7 +87,8 @@ STRATEGY_REGISTRY = {
     'martingale': MartingaleStrategy,
     'tsmom': TimeSeriesMomentumStrategy,
     'adaptive_momentum': AdaptiveMomentumStrategy,
-    'advanced_pairs': AdvancedPairsTradingStrategy,
+    # AdvancedPairsTradingStrategy 是双标的配对框架（接口为 initialize(price_a, price_b)），
+    # 不符合单标的 BaseStrategy 接口，不放入注册表，直接导入使用
 }
 
 
