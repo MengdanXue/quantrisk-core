@@ -26,8 +26,7 @@ logging.getLogger("quantrisk").setLevel(logging.WARNING)
 for _mod in pkgutil.walk_packages(quantrisk.indicators.__path__, "quantrisk.indicators."):
     importlib.import_module(_mod.name)
 
-# advanced_pairs 的构造函数签名与注册表不一致，见 README「已知问题」
-DEMO_STRATEGIES = [name for name in STRATEGY_REGISTRY if name != "advanced_pairs"]
+DEMO_STRATEGIES = list(STRATEGY_REGISTRY)
 OHLCV = {"open", "high", "low", "close", "volume"}
 
 app = FastAPI(title="quantrisk-core demo")
