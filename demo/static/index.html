@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>quantrisk-core 演示</title>
+<style>
+  body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 24px; color: #1f2933; background: #f7f8fa; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #66788a; font-size: 13px; margin-bottom: 16px; }
+  .panel { background: #fff; border: 1px solid #e1e5ea; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  label { display: flex; flex-direction: column; font-size: 12px; color: #52606d; gap: 4px; }
+  select, input { padding: 6px 8px; border: 1px solid #cbd2d9; border-radius: 4px; font-size: 14px; }
+  button { padding: 7px 16px; border: 0; border-radius: 4px; background: #2563eb; color: #fff; font-size: 14px; cursor: pointer; }
+  button:disabled { background: #9aa5b1; }
+  canvas { width: 100%; height: 320px; display: block; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
+  .metric { background: #f5f7fa; border-radius: 6px; padding: 8px 10px; }
+  .metric b { display: block; font-size: 16px; }
+  .metric span { font-size: 12px; color: #66788a; }
+  .legend { font-size: 12px; color: #52606d; margin-top: 6px; }
+  .legend i { display: inline-block; width: 12px; height: 3px; margin: 0 4px 2px 12px; vertical-align: middle; }
+  .err { color: #b91c1c; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>quantrisk-core 演示</h1>
+<div class="sub">数据为几何布朗运动生成的模拟日线，仅用于展示库的用法，不构成任何投资建议。<span id="regcount"></span></div>
+
+<div class="panel">
+  <div class="row">
+    <label>策略<select id="strategy"></select></label>
+    <label>天数<input id="days" type="number" value="500" min="60" max="3000" style="width:80px"></label>
+    <label>随机种子<input id="seed" type="number" value="42" style="width:80px"></label>
+    <label>日漂移<input id="drift" type="number" value="0.0003" step="0.0001" style="width:90px"></label>
+    <label>日波动<input id="vol" type="number" value="0.015" step="0.001" style="width:80px"></label>
+    <label>手续费<input id="commission" type="number" value="0.001" step="0.0005" style="width:80px"></label>
+    <button id="run-backtest">运行回测</button>
+  </div>
+  <canvas id="equity-chart"></canvas>
+  <div class="legend"><i style="background:#2563eb"></i>策略权益<i style="background:#9aa5b1"></i>买入持有</div>
+  <div id="backtest-error" class="err"></div>
+  <div id="metrics" class="metrics"></div>
+</div>
+
+<div class="panel">
+  <div class="row">
+    <label>指标（仅需 OHLCV 的）<select id="indicator"></select></label>
+    <button id="run-indicator">计算指标</button>
+  </div>
+  <canvas id="indicator-chart"></canvas>
+  <div id="indicator-legend" class="legend"></div>
+  <div id="indicator-error" class="err"></div>
+</div>
+
+<script>
+const COLORS = ["#2563eb", "#d97706", "#059669", "#db2777"];
+const METRIC_NAMES = {
+  total_return: "总收益", annual_return: "年化收益", volatility: "年化波动", sharpe_ratio: "夏普比率",
+  max_drawdown: "最大回撤", win_rate: "胜率", total_trades: "交易次数", profit_factor: "盈亏比",
+};
+const $ = (id) => document.getElementById(id);
+
+function params() {
+  return { days: +$("days").value, seed: +$("seed").value, drift: +$("drift").value, vol: +$("vol").value };
+}
+
+async function post(url, body) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
+  return data;
+}
+
+function drawLines(canvas, series) {
+  const ratio = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * ratio; canvas.height = h * ratio;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(ratio, ratio);
+  ctx.clearRect(0, 0, w, h);
+  const all = series.flatMap((s) => s.values).filter((v) => v !== null);
+  if (!all.length) return;
+  let min = Math.min(...all), max = Math.max(...all);
+  if (min === max) { min -= 1; max += 1; }
+  const pad = { l: 64, r: 8, t: 8, b: 20 };
+  const n = series[0].values.length;
+  const x = (i) => pad.l + (i / Math.max(n - 1, 1)) * (w - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (v - min) / (max - min)) * (h - pad.t - pad.b);
+  ctx.strokeStyle = "#e4e7eb"; ctx.fillStyle = "#7b8794"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const v = min + (k / 4) * (max - min);
+    ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(w - pad.r, y(v)); ctx.stroke();
+    ctx.fillText(Math.abs(v) >= 1000 ? v.toExponential(2) : v.toFixed(2), 4, y(v) + 4);
+  }
+  series.forEach((s) => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 1.5; ctx.beginPath();
+    let started = false;
+    s.values.forEach((v, i) => {
+      if (v === null) { started = false; return; }
+      if (!started) { ctx.moveTo(x(i), y(v)); started = true; } else ctx.lineTo(x(i), y(v));
+    });
+    ctx.stroke();
+  });
+}
+
+function fmt(key, v) {
+  if (v === null || v === undefined) return "—";
+  if (["total_return", "annual_return", "volatility", "max_drawdown", "win_rate"].includes(key)) return (v * 100).toFixed(2) + "%";
+  return Number.isInteger(v) ? String(v) : v.toFixed(3);
+}
+
+async function runBacktest() {
+  $("run-backtest").disabled = true; $("backtest-error").textContent = "";
+  try {
+    const data = await post("/api/backtest", { ...params(), strategy: $("strategy").value, commission: +$("commission").value });
+    drawLines($("equity-chart"), [
+      { values: data.benchmark, color: "#9aa5b1" },
+      { values: data.equity, color: "#2563eb" },
+    ]);
+    const keys = Object.keys(METRIC_NAMES).filter((k) => k in data.metrics);
+    $("metrics").innerHTML = keys.map((k) => `<div class="metric" data-key="${k}"><b>${fmt(k, data.metrics[k])}</b><span>${METRIC_NAMES[k]}</span></div>`).join("");
+  } catch (e) {
+    $("backtest-error").textContent = "回测失败：" + e.message;
+  } finally {
+    $("run-backtest").disabled = false;
+  }
+}
+
+async function runIndicator() {
+  $("run-indicator").disabled = true; $("indicator-error").textContent = "";
+  try {
+    const data = await post("/api/indicator", { ...params(), name: $("indicator").value });
+    const names = Object.keys(data.series);
+    drawLines($("indicator-chart"), names.map((n, i) => ({ values: data.series[n], color: COLORS[i % COLORS.length] })));
+    $("indicator-legend").innerHTML = names.map((n, i) => `<i style="background:${COLORS[i % COLORS.length]}"></i>${n}`).join("");
+  } catch (e) {
+    $("indicator-error").textContent = "计算失败：" + e.message;
+  } finally {
+    $("run-indicator").disabled = false;
+  }
+}
+
+async function init() {
+  const [strategies, indicators] = await Promise.all([fetch("/api/strategies").then((r) => r.json()), fetch("/api/indicators").then((r) => r.json())]);
+  $("strategy").innerHTML = strategies.map((s) => `<option value="${s.name}" title="${s.description}">${s.name}</option>`).join("");
+  $("strategy").value = "ma_cross";
+  $("indicator").innerHTML = indicators.ohlcv_only.map((i) => `<option value="${i.name}">${i.category} / ${i.name}</option>`).join("");
+  $("indicator").value = indicators.ohlcv_only.some((i) => i.name === "RSI") ? "RSI" : indicators.ohlcv_only[0].name;
+  $("regcount").textContent = ` 已注册指标 ${indicators.total_registered} 个，其中仅需 OHLCV 的 ${indicators.ohlcv_only.length} 个。`;
+  $("run-backtest").onclick = runBacktest;
+  $("run-indicator").onclick = runIndicator;
+  runBacktest();
+  runIndicator();
+}
+init();
+</script>
+</body>
+</html>
