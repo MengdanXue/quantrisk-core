@@ -62,6 +62,7 @@ class BacktestRequest(DataSpec):
     strategy: str = "ma_cross"
     initial_capital: float = Field(1_000_000, gt=0)
     commission: float = Field(0.001, ge=0, le=0.05)
+    position_pct: float = Field(0.5, gt=0, le=1.0)
 
 
 class IndicatorRequest(DataSpec):
@@ -99,7 +100,7 @@ def backtest(req: BacktestRequest):
     if req.strategy not in DEMO_STRATEGIES:
         raise HTTPException(400, f"unknown strategy: {req.strategy}")
     data = synthetic_prices(req.days, req.seed, req.drift, req.vol)
-    result = get_strategy(req.strategy).run(data, initial_capital=req.initial_capital, commission=req.commission)
+    result = get_strategy(req.strategy, {"position_pct": req.position_pct}).run(data, initial_capital=req.initial_capital, commission=req.commission)
     benchmark = data["close"] / data["close"].iloc[0] * req.initial_capital
     metrics = {k: (round(float(v), 6) if isinstance(v, (int, float, np.floating)) and math.isfinite(float(v)) else None)
                for k, v in result.metrics.items()}

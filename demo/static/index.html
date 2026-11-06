@@ -36,6 +36,7 @@
     <label>日漂移<input id="drift" type="number" value="0.0003" step="0.0001" style="width:90px"></label>
     <label>日波动<input id="vol" type="number" value="0.015" step="0.001" style="width:80px"></label>
     <label>手续费<input id="commission" type="number" value="0.001" step="0.0005" style="width:80px"></label>
+    <label title="单次开仓占资金的比例；强信号会再放大 1.5 倍，超过可用资金时不成交">仓位比例<input id="position-pct" type="number" value="0.5" min="0.05" max="1" step="0.05" style="width:80px"></label>
     <button id="run-backtest">运行回测</button>
   </div>
   <canvas id="equity-chart"></canvas>
@@ -74,27 +75,39 @@ async function post(url, body) {
 }
 
 function drawLines(canvas, series) {
+  // axis: "right" 的序列用独立的右侧坐标轴，避免量级不同的线互相压扁
   const ratio = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   canvas.width = w * ratio; canvas.height = h * ratio;
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
   ctx.clearRect(0, 0, w, h);
-  const all = series.flatMap((s) => s.values).filter((v) => v !== null);
-  if (!all.length) return;
-  let min = Math.min(...all), max = Math.max(...all);
-  if (min === max) { min -= 1; max += 1; }
-  const pad = { l: 64, r: 8, t: 8, b: 20 };
+  const hasRight = series.some((s) => s.axis === "right");
+  const pad = { l: 64, r: hasRight ? 64 : 8, t: 8, b: 20 };
+  const range = (list) => {
+    const all = list.flatMap((s) => s.values).filter((v) => v !== null);
+    if (!all.length) return null;
+    let min = Math.min(...all), max = Math.max(...all);
+    if (min === max) { min -= 1; max += 1; }
+    return { min, max };
+  };
+  const left = range(series.filter((s) => s.axis !== "right"));
+  const right = range(series.filter((s) => s.axis === "right"));
+  if (!left && !right) return;
   const n = series[0].values.length;
   const x = (i) => pad.l + (i / Math.max(n - 1, 1)) * (w - pad.l - pad.r);
-  const y = (v) => pad.t + (1 - (v - min) / (max - min)) * (h - pad.t - pad.b);
+  const yOf = (r) => (v) => pad.t + (1 - (v - r.min) / (r.max - r.min)) * (h - pad.t - pad.b);
+  const label = (v) => (Math.abs(v) >= 1000 ? v.toExponential(2) : v.toFixed(2));
   ctx.strokeStyle = "#e4e7eb"; ctx.fillStyle = "#7b8794"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1;
+  const grid = left || right;
   for (let k = 0; k <= 4; k++) {
-    const v = min + (k / 4) * (max - min);
-    ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(w - pad.r, y(v)); ctx.stroke();
-    ctx.fillText(Math.abs(v) >= 1000 ? v.toExponential(2) : v.toFixed(2), 4, y(v) + 4);
+    const yy = yOf(grid)(grid.min + (k / 4) * (grid.max - grid.min));
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke();
+    if (left) ctx.fillText(label(left.min + (k / 4) * (left.max - left.min)), 4, yy + 4);
+    if (right) ctx.fillText(label(right.min + (k / 4) * (right.max - right.min)), w - pad.r + 6, yy + 4);
   }
   series.forEach((s) => {
+    const y = yOf(s.axis === "right" ? right : left);
     ctx.strokeStyle = s.color; ctx.lineWidth = 1.5; ctx.beginPath();
     let started = false;
     s.values.forEach((v, i) => {
@@ -103,6 +116,11 @@ function drawLines(canvas, series) {
     });
     ctx.stroke();
   });
+}
+
+function medianAbs(values) {
+  const v = values.filter((x) => x !== null).map(Math.abs).sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length / 2)] : 0;
 }
 
 function fmt(key, v) {
@@ -114,7 +132,7 @@ function fmt(key, v) {
 async function runBacktest() {
   $("run-backtest").disabled = true; $("backtest-error").textContent = "";
   try {
-    const data = await post("/api/backtest", { ...params(), strategy: $("strategy").value, commission: +$("commission").value });
+    const data = await post("/api/backtest", { ...params(), strategy: $("strategy").value, commission: +$("commission").value, position_pct: +$("position-pct").value });
     drawLines($("equity-chart"), [
       { values: data.benchmark, color: "#9aa5b1" },
       { values: data.equity, color: "#2563eb" },
@@ -133,8 +151,10 @@ async function runIndicator() {
   try {
     const data = await post("/api/indicator", { ...params(), name: $("indicator").value });
     const names = Object.keys(data.series);
-    drawLines($("indicator-chart"), names.map((n, i) => ({ values: data.series[n], color: COLORS[i % COLORS.length] })));
-    $("indicator-legend").innerHTML = names.map((n, i) => `<i style="background:${COLORS[i % COLORS.length]}"></i>${n}`).join("");
+    const base = medianAbs(data.series[names[0]]) || 1;
+    const axisOf = (n) => { const m = medianAbs(data.series[n]); return m > base * 5 || m * 5 < base ? "right" : "left"; };
+    drawLines($("indicator-chart"), names.map((n, i) => ({ values: data.series[n], color: COLORS[i % COLORS.length], axis: axisOf(n) })));
+    $("indicator-legend").innerHTML = names.map((n, i) => `<i style="background:${COLORS[i % COLORS.length]}"></i>${n}${axisOf(n) === "right" ? "（右轴）" : ""}`).join("");
   } catch (e) {
     $("indicator-error").textContent = "计算失败：" + e.message;
   } finally {
