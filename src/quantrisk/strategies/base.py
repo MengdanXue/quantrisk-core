@@ -372,11 +372,12 @@ class BaseStrategy(ABC):
                 position = 0
 
             # 记录持仓和收益
+            # 收益 = 本bar期末权益 / 上一bar期末权益 - 1（不能用成交后的持仓回溯上一bar，否则会产生前视偏差）
             equity = cash + position * price
             positions.iloc[i] = position
             if i > 0:
-                prev_equity = cash + position * data.iloc[i - 1]['close']
                 returns.iloc[i] = (equity - prev_equity) / prev_equity if prev_equity > 0 else 0
+            prev_equity = equity
 
         return positions, returns, trades
 
