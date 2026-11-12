@@ -162,7 +162,9 @@ class FillEvent(Event):
 
     def __post_init__(self):
         self.event_type = EventType.FILL
+        # 合并调用方传入的 data（如 is_partial / remaining_quantity / fees），不能覆盖
         self.data = {
+            **(self.data or {}),
             'order_id': self.order_id,
             'symbol': self.symbol,
             'side': self.side,

@@ -83,7 +83,8 @@ def test_truncation_check_catches_peeking_strategy():
 def test_round_trip_costs():
     """一次买入加一次卖出，在价格不变时权益只损失手续费和滑点。"""
     data = random_walk(n=10, seed=0)
-    data[["open", "high", "low", "close"]] = 100.0
+    data[["open", "close"]] = 100.0
+    data["high"], data["low"] = 101.0, 99.0   # 留出价格区间，滑点后的成交价仍在当日高低价之内
 
     class OneRoundTrip(BaseStrategy):
         def default_params(self):
@@ -100,5 +101,6 @@ def test_round_trip_costs():
     buy_cost = qty * 100 * (1 + slippage) * (1 + commission)
     sell_revenue = qty * 100 * (1 - slippage) * (1 - commission)
     assert result.equity_curve.iloc[-1] == pytest.approx(capital - buy_cost + sell_revenue, rel=1e-9)
-    # 持仓期间价格不变，权益不应变化
-    assert result.returns.iloc[3:6].abs().max() == pytest.approx(0, abs=1e-12)
+    # 第 2 根信号在第 3 根开盘买入、第 6 根信号在第 7 根开盘卖出；第 4–6 根只持仓且价格不变，权益不应变化
+    assert [f["date"] for f in result.fills] == [str(data.index[3].date()), str(data.index[7].date())]
+    assert result.returns.iloc[4:7].abs().max() == pytest.approx(0, abs=1e-12)

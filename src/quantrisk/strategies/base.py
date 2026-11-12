@@ -50,6 +50,11 @@ class StrategyResult:
     metrics: Dict[str, float]  # 绩效指标
     params: Dict[str, Any]  # 策略参数
     generated_at: datetime = field(default_factory=datetime.now)
+    ledger: Optional[pd.DataFrame] = None   # 逐日账本：cash / frozen / position / close / market_value / equity
+    orders: List[Dict] = field(default_factory=list)   # 订单及其最终状态、拒绝原因
+    fills: List[Dict] = field(default_factory=list)    # 成交明细（含分项费用）
+    journal: List[Dict] = field(default_factory=list)  # 资金流水
+    data_issues: Dict[str, Any] = field(default_factory=dict)  # 被剔除的无效行情等
 
 
 class BaseStrategy(ABC):
@@ -137,8 +142,13 @@ class BaseStrategy(ABC):
         if missing:
             raise ValueError(f"Missing required columns: {missing}")
 
-        # 处理缺失值
-        data = data.ffill().bfill()
+        # 不补值：缺失或无效的K线直接剔除（视为当日无行情），避免向后填充把未来数据带入历史，
+        # 也避免向前填充制造出并不存在的可成交行情。被剔除的日期记录在 data.attrs['dropped_rows']。
+        price = data[required_columns]
+        valid = price.notna().all(axis=1) & (price > 0).all(axis=1)
+        dropped = [str(d) for d in data.index[~valid]]
+        data = data[valid].copy()
+        data.attrs['dropped_rows'] = dropped
 
         return data
 
@@ -261,135 +271,78 @@ class BaseStrategy(ABC):
         initial_capital: float = 1_000_000,
         commission: float = 0.001,
         slippage: float = 0.0005,
+        market=None,
+        bars: Optional[pd.DataFrame] = None,
+        calendar: Optional[pd.DatetimeIndex] = None,
+        corporate_actions=(),
+        symbol: Optional[str] = None,
     ) -> StrategyResult:
         """
         运行策略并返回结果
 
+        成交规则：T 日收盘产生信号，T+1 交易日开盘价撮合（见 strategies/backtest/daily.py）。
+
         Args:
-            data: OHLCV数据
+            data: 用于生成信号的 OHLCV 数据（A 股建议用后复权价，见 quantrisk.data.ashare）
             initial_capital: 初始资金
-            commission: 手续费率
-            slippage: 滑点
+            commission: 佣金率（仅在未指定 market 时使用）
+            slippage: 滑点（仅在未指定 market 时使用）
+            market: 市场规则，默认 GenericMarket(commission, slippage)；A 股用 AShareMarket
+            bars: 实际成交与估值用的价格（A 股为不复权价）；默认与 data 相同
+            calendar: 交易日历；默认为 bars 的日期
+            corporate_actions: 除权除息事件（CorporateAction 列表）
+            symbol: 证券代码
 
         Returns:
             策略运行结果
         """
-        # 预处理数据
+        from .backtest.daily import GenericMarket, run_daily
+
+        symbol = symbol or data.attrs.get('symbol', 'UNKNOWN')
+        # 撮合用未经剔除的原始行情：无效K线在撮合层按“当日无行情”处理，日期本身不能消失
+        exec_bars = data.sort_index() if bars is None else bars
         data = self.preprocess_data(data.copy())
-
-        # 生成信号
         signals = self.generate_signals(data)
+        market = market or GenericMarket(commission=commission, slippage=slippage)
 
-        # 模拟交易
-        positions, returns, trades = self._simulate_trading(
-            data, signals, initial_capital, commission, slippage
-        )
-
-        # 计算权益曲线
-        equity_curve = (1 + returns).cumprod() * initial_capital
-
-        # 计算绩效指标
-        metrics = self._calculate_metrics(returns, equity_curve, trades)
+        out = run_daily(self, signals, exec_bars, market, initial_capital, symbol=symbol,
+                        calendar=calendar, corporate_actions=corporate_actions)
+        ledger = out['ledger']
+        equity_curve = ledger['equity'].rename('equity')
+        returns = equity_curve.pct_change()
+        returns.iloc[0] = equity_curve.iloc[0] / initial_capital - 1   # 首日成本也计入收益
+        trades = out['trades']
+        metrics = self._calculate_metrics(returns, equity_curve, trades, initial_capital)
 
         return StrategyResult(
             strategy_name=self.name,
-            symbol=data.attrs.get('symbol', 'UNKNOWN'),
+            symbol=symbol,
             signals=signals,
-            positions=positions,
+            positions=ledger['position'],
             returns=returns,
             equity_curve=equity_curve,
             trades=trades,
             metrics=metrics,
             params=self.params,
+            ledger=ledger,
+            orders=out['orders'],
+            fills=out['fills'],
+            journal=out['journal'],
+            data_issues={'dropped_signal_rows': data.attrs.get('dropped_rows', []),
+                         'invalid_execution_days': out['invalid_days']},
         )
-
-    def _simulate_trading(
-        self,
-        data: pd.DataFrame,
-        signals: pd.Series,
-        initial_capital: float,
-        commission: float,
-        slippage: float,
-    ) -> Tuple[pd.Series, pd.Series, List[Dict]]:
-        """
-        模拟交易执行
-
-        Returns:
-            (positions, returns, trades)
-        """
-        positions = pd.Series(0.0, index=data.index)
-        returns = pd.Series(0.0, index=data.index)
-        trades = []
-
-        cash = initial_capital
-        position = 0.0
-        entry_price = 0.0
-        entry_date = None
-
-        for i, (date, row) in enumerate(data.iterrows()):
-            price = row['close']
-            signal = signals.get(date, 0)
-
-            # 将信号转换为整数（如果是枚举）
-            if isinstance(signal, Signal):
-                signal = signal.value
-
-            # 开多仓
-            if signal > 0 and position == 0:
-                exec_price = price * (1 + slippage)
-                position_size = self.calculate_position_size(
-                    Signal.BUY, exec_price, cash
-                )
-                cost = position_size * exec_price * (1 + commission)
-
-                if cost <= cash and position_size > 0:
-                    cash -= cost
-                    position = position_size
-                    entry_price = exec_price
-                    entry_date = date
-
-            # 平多仓
-            elif signal < 0 and position > 0:
-                exec_price = price * (1 - slippage)
-                revenue = position * exec_price * (1 - commission)
-
-                pnl = revenue - (position * entry_price)
-                pnl_pct = (exec_price - entry_price) / entry_price
-
-                trades.append({
-                    'entry_date': str(entry_date),
-                    'exit_date': str(date),
-                    'direction': 'long',
-                    'entry_price': entry_price,
-                    'exit_price': exec_price,
-                    'quantity': position,
-                    'pnl': pnl,
-                    'pnl_pct': pnl_pct,
-                    'holding_days': (date - entry_date).days if hasattr(date, 'days') else 1,
-                })
-
-                cash += revenue
-                position = 0
-
-            # 记录持仓和收益
-            # 收益 = 本bar期末权益 / 上一bar期末权益 - 1（不能用成交后的持仓回溯上一bar，否则会产生前视偏差）
-            equity = cash + position * price
-            positions.iloc[i] = position
-            if i > 0:
-                returns.iloc[i] = (equity - prev_equity) / prev_equity if prev_equity > 0 else 0
-            prev_equity = equity
-
-        return positions, returns, trades
 
     def _calculate_metrics(
         self,
         returns: pd.Series,
         equity_curve: pd.Series,
         trades: List[Dict],
+        initial_capital: Optional[float] = None,
     ) -> Dict[str, float]:
-        """计算绩效指标"""
+        """计算绩效指标（收益相对初始资金计算；交易盈亏已含买卖全部费用）"""
         # 基础收益指标
-        total_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) - 1
+        base = initial_capital if initial_capital else equity_curve.iloc[0]
+        total_return = (equity_curve.iloc[-1] / base) - 1
 
         # 计算年化收益
         if len(equity_curve) > 1:
@@ -410,8 +363,8 @@ class BaseStrategy(ABC):
             volatility = 0
             sharpe_ratio = 0
 
-        # 最大回撤
-        cummax = equity_curve.cummax()
+        # 最大回撤（以初始资金为起点）
+        cummax = equity_curve.cummax().clip(lower=base)
         drawdown = (equity_curve - cummax) / cummax
         max_drawdown = drawdown.min()
 
@@ -425,7 +378,7 @@ class BaseStrategy(ABC):
             avg_loss = abs(np.mean([t['pnl'] for t in losses])) if losses else 0
             profit_factor = avg_win / avg_loss if avg_loss > 0 else 0
 
-            avg_holding = np.mean([t.get('holding_days', 1) for t in trades])
+            avg_holding = np.mean([t['holding_days'] for t in trades])  # 自然日
         else:
             win_rate = 0
             profit_factor = 0

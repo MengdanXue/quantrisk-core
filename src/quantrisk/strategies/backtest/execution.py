@@ -244,6 +244,50 @@ class TieredCommissionModel(CommissionModel):
         return value * self.tiers[-1][1]
 
 
+class ItemizedFeeModel(CommissionModel):
+    """按项目拆分费用的模型：breakdown() 返回 {费用名: 金额}，calculate_commission() 返回合计。"""
+
+    @abstractmethod
+    def breakdown(self, price: float, quantity: float, side: str, trade_date=None) -> Dict[str, float]:
+        pass
+
+    def calculate_commission(self, price: float, quantity: float, side: str, trade_date=None) -> float:
+        return sum(self.breakdown(price, quantity, side, trade_date).values())
+
+
+class SimpleFeeModel(ItemizedFeeModel):
+    """单一比例佣金（可设最低佣金），不含税费。用于非 A 股或模拟数据。"""
+
+    def __init__(self, rate: float = 0.001, min_commission: float = 0.0):
+        self.rate = rate
+        self.min_commission = min_commission
+
+    def breakdown(self, price, quantity, side, trade_date=None):
+        return {"commission": max(price * quantity * self.rate, self.min_commission)}
+
+
+class AShareFeeModel(ItemizedFeeModel):
+    """
+    A 股费用：佣金（双向，含最低佣金）+ 印花税（仅卖出，按日期取税率）+ 过户费（双向，按日期取费率）。
+    每项费用分别按 0.01 元四舍五入。佣金率与最低佣金因券商而异，需按实际账户设置。
+    """
+
+    def __init__(self, commission_rate: float = 0.00025, min_commission: float = 5.0):
+        self.commission_rate = commission_rate
+        self.min_commission = min_commission
+
+    def breakdown(self, price, quantity, side, trade_date=None):
+        from .ashare_rules import round_price, stamp_duty_rate, transfer_fee_rate
+        if trade_date is None:
+            raise ValueError("A 股费用需要成交日期以确定税费版本")
+        amount = price * quantity
+        return {
+            "commission": round_price(max(amount * self.commission_rate, self.min_commission)),
+            "stamp_duty": round_price(amount * stamp_duty_rate(trade_date, side)),
+            "transfer_fee": round_price(amount * transfer_fee_rate(trade_date)),
+        }
+
+
 @dataclass
 class FillResult:
     """成交结果"""
@@ -272,7 +316,8 @@ class ExecutionHandler:
         slippage_model: Optional[SlippageModel] = None,
         commission_model: Optional[CommissionModel] = None,
         fill_ratio_limit: float = 0.1,
-        allow_partial_fills: bool = True
+        allow_partial_fills: bool = True,
+        market_rules=None,
     ):
         """
         初始化执行处理器
@@ -282,11 +327,19 @@ class ExecutionHandler:
             commission_model: 手续费模型
             fill_ratio_limit: 最大成交量占比（防止过大订单）
             allow_partial_fills: 是否允许部分成交
+            market_rules: 可选的市场规则对象，需实现
+                clamp_price(order, bar, price) -> price            成交价约束（如涨跌停价、当日高低价）
+                check(order, bar, price) -> (quantity, reason)      规则与资金允许的最大成交数量，0 时给出拒绝原因
+                round_quantity(order, quantity) -> quantity         按申报单位取整
         """
         self.slippage_model = slippage_model or FixedSlippageModel()
         self.commission_model = commission_model or PercentCommissionModel()
         self.fill_ratio_limit = fill_ratio_limit
         self.allow_partial_fills = allow_partial_fills
+        self.market_rules = market_rules
+
+        # 订单生命周期记录：每次成交、拒绝、过期各一条
+        self.order_log: List[Dict] = []
 
         # 订单簿
         self._pending_orders: Dict[str, OrderEvent] = {}
@@ -343,6 +396,15 @@ class ExecutionHandler:
                     remaining = fill.data.get('remaining_quantity', 0)
                     order.quantity = remaining
 
+        # 当日有效（DAY）的订单在本根K线结束后未成交部分作废
+        for order_id, order in self._pending_orders.items():
+            if order.symbol == bar.symbol and order_id not in orders_to_remove and order.time_in_force == 'DAY':
+                orders_to_remove.append(order_id)
+                if order.status not in ('REJECTED',):
+                    order.status = 'EXPIRED'
+                    self.order_log.append({'timestamp': bar.timestamp, 'order_id': order_id, 'status': 'EXPIRED',
+                                           'quantity': order.quantity, 'reason': 'DAY 订单当日未(全部)成交'})
+
         # 移除已完成订单
         for order_id in orders_to_remove:
             del self._pending_orders[order_id]
@@ -370,35 +432,63 @@ class ExecutionHandler:
         if not should_fill:
             return None
 
-        # 计算成交数量（考虑成交量限制）
+        # 计算滑点与成交价
         volume = bar.volume if bar.volume > 0 else float('inf')
-        max_fill = volume * self.fill_ratio_limit
-
-        if order.quantity > max_fill:
-            if self.allow_partial_fills:
-                fill_quantity = max_fill
-                remaining = order.quantity - max_fill
-                is_partial = True
-            else:
-                return None  # 无法成交
-        else:
-            fill_quantity = order.quantity
-            remaining = 0
-            is_partial = False
-
-        # 计算滑点
         vol = self._volatility_cache.get(order.symbol, 0.02)
         slippage = self.slippage_model.calculate_slippage(
-            base_price, fill_quantity, order.side, volume, vol
+            base_price, order.quantity, order.side, volume, vol
         )
-
-        # 成交价
         fill_price = base_price + slippage
+        if self.market_rules is not None:
+            fill_price = self.market_rules.clamp_price(order, bar, fill_price)
+            allowed, reason = self.market_rules.check(order, bar, fill_price)
+            if allowed <= 0:
+                order.status = 'REJECTED'
+                self.order_log.append({'timestamp': bar.timestamp, 'order_id': order.order_id,
+                                       'status': 'REJECTED', 'quantity': order.quantity, 'reason': reason})
+                return None
+            requested = min(order.quantity, allowed)
+            limit_reason = reason if allowed < order.quantity else ''
+        else:
+            requested = order.quantity
+            limit_reason = ''
 
-        # 计算手续费
-        commission = self.commission_model.calculate_commission(
-            fill_price, fill_quantity, order.side
-        )
+
+        # 计算成交数量（考虑成交量限制）
+        max_fill = volume * self.fill_ratio_limit
+        if requested > max_fill:
+            if not self.allow_partial_fills:
+                order.status = 'REJECTED'
+                self.order_log.append({'timestamp': bar.timestamp, 'order_id': order.order_id,
+                                       'status': 'REJECTED', 'quantity': order.quantity,
+                                       'reason': '超过成交量参与上限且不允许部分成交'})
+                return None
+            fill_quantity = max_fill
+            limit_reason = limit_reason or f'成交量参与上限 {self.fill_ratio_limit:.0%} × {volume:g}'
+        else:
+            fill_quantity = requested
+        if self.market_rules is not None:
+            fill_quantity = self.market_rules.round_quantity(order, fill_quantity)
+            if fill_quantity <= 0:
+                order.status = 'REJECTED'
+                self.order_log.append({'timestamp': bar.timestamp, 'order_id': order.order_id,
+                                       'status': 'REJECTED', 'quantity': order.quantity,
+                                       'reason': '成交量参与上限内不足一个申报单位'})
+                return None
+        remaining = order.quantity - fill_quantity
+        is_partial = remaining > 0
+
+        # 计算手续费（分项模型带上成交日期，以便按日期取税费版本）
+        if isinstance(self.commission_model, ItemizedFeeModel):
+            fees = self.commission_model.breakdown(fill_price, fill_quantity, order.side, bar.timestamp)
+        else:
+            fees = {'commission': self.commission_model.calculate_commission(fill_price, fill_quantity, order.side)}
+        commission = sum(fees.values())
+
+        order.status = 'PARTIAL' if is_partial else 'FILLED'
+        self.order_log.append({'timestamp': bar.timestamp, 'order_id': order.order_id, 'status': order.status,
+                               'quantity': fill_quantity, 'price': fill_price, 'fees': fees,
+                               'reason': '' if not is_partial else f'剩余 {remaining:g} 未成交：{limit_reason}'})
 
         return FillEvent(
             timestamp=bar.timestamp,
@@ -408,11 +498,12 @@ class ExecutionHandler:
             quantity=fill_quantity,
             fill_price=fill_price,
             commission=commission,
-            slippage=abs(slippage),
+            slippage=abs(fill_price - base_price),
             data={
                 'is_partial': is_partial,
                 'remaining_quantity': remaining,
                 'base_price': base_price,
+                'fees': fees,
             }
         )
 

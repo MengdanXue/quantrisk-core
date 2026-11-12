@@ -1,4 +1,7 @@
 """
+单证券 Walk-Forward 工具（旧版，按比例切分、无验证集与隔离期）。
+组合级样本外研究请使用 quantrisk.research.walk_forward.WalkForwardStudy。
+
 Walk-Forward优化
 
 用于策略参数的稳健性优化，避免过拟合
@@ -233,8 +236,8 @@ class WalkForwardOptimizer:
                     best_metrics = result.metrics
 
             except Exception as e:
-                warnings.warn(f"Parameter combination {params} failed: {e}")
-                continue
+                # 不再静默跳过：失败的参数组合会让选择结果失真，必须显式报错
+                raise RuntimeError(f"参数组合 {params} 回测失败") from e
 
         return best_params or {}, best_metrics or {}
 
@@ -254,11 +257,7 @@ class WalkForwardOptimizer:
                 'equity': result.equity_curve
             }
         except Exception as e:
-            warnings.warn(f"Evaluation failed: {e}")
-            return {
-                'metrics': {},
-                'equity': pd.Series(dtype=float)
-            }
+            raise RuntimeError("测试段评估失败") from e
 
     def _calculate_combined_metrics(
         self,

@@ -14,7 +14,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-from .engine import BacktestEngine, BacktestConfig, OrderSide, PositionSide
+from .engine import BacktestEngine, BacktestConfig, LegacyEngineError, OrderSide, PositionSide
 
 
 @dataclass
@@ -68,6 +68,9 @@ class PortfolioBacktest:
     """
 
     def __init__(self, config: Optional[PortfolioConfig] = None):
+        # 已停用：基于旧 BacktestEngine，按当日收盘价调仓，没有 T+1、涨跌停、申报单位与资金冻结
+        raise LegacyEngineError(
+            "PortfolioBacktest 已停用：请使用 quantrisk.strategies.backtest.daily.run_portfolio()")
         self.config = config or PortfolioConfig()
         self.reset()
 

@@ -11,3 +11,5 @@ dist/
 *.xlsx
 *.csv
 !examples/*.csv
+/reports/
+/data/
