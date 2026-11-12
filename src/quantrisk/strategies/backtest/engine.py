@@ -1,5 +1,5 @@
 """
-核心回测引擎
+旧版回测引擎（已停用，见 BacktestEngine.__init__）
 
 提供事件驱动的回测框架，支持：
 - 逐bar模拟
@@ -10,6 +10,11 @@
 """
 
 from dataclasses import dataclass, field
+
+
+class LegacyEngineError(RuntimeError):
+    """调用了已停用的旧回测引擎。"""
+
 from typing import Dict, List, Any, Optional, Callable
 from enum import Enum
 from datetime import datetime
@@ -149,6 +154,11 @@ class BacktestEngine:
     """
 
     def __init__(self, config: Optional[BacktestConfig] = None):
+        # 已停用：该引擎按当根价格成交、支持保证金与做空，且不使用 daily.py 的 A 股规则与资金账本，
+        # 其结果与 BaseStrategy.run / run_portfolio 相互矛盾，不能作为有效回测结果。
+        raise LegacyEngineError(
+            "BacktestEngine 已停用：请使用 BaseStrategy.run()（单证券）或 "
+            "quantrisk.strategies.backtest.daily.run_portfolio()（多证券）")
         self.config = config or BacktestConfig()
         self.reset()
 
