@@ -1,0 +1,85 @@
+{
+  "verified_on": "2026-11-09",
+  "scope": "深交所上市的境内普通股票型宽基 ETF（第一阶段只用于 sz159596）",
+  "sources": {
+    "szse_trading_rules_2026": {
+      "title": "深圳证券交易所交易规则（2026 年修订），自 2026-07-06 起施行（第 10.9 条）",
+      "url": "https://docs.static.szse.cn/www/lawrules/rule/trade/current/W020260424690713155663.pdf",
+      "local_copy": "本地存档：reports/etf_pilot/rules/szse_trading_rules_2026.pdf（不随仓库分发）",
+      "sha256": "9b66f8b0db70f84a25ef1ccb4ee2351001724e408117552d75f6d8993483c586"
+    },
+    "szse_fee_schedule": {
+      "title": "深交所收费标准",
+      "url": "https://www.szse.cn/marketServices/deal/payFees/index.html"
+    },
+    "szse_investor_guide_2021": {
+      "title": "“基金入门300问”系列之十八攻略先读：场内基金交易指南（2021-01-04）",
+      "url": "https://investor.szse.cn/warning/t20210104_584079.html"
+    }
+  },
+  "rules": {
+    "tick_size": {
+      "value": 0.001,
+      "status": "VERIFIED",
+      "source": "szse_trading_rules_2026",
+      "article": "3.3.11",
+      "quote": "基金的申报价格最小变动单位为 0.001 元人民币"
+    },
+    "lot": {
+      "min_qty": 100,
+      "step": 100,
+      "odd_lot_sell_all": true,
+      "status": "VERIFIED",
+      "source": "szse_trading_rules_2026",
+      "article": "3.3.8",
+      "quote": "通过竞价交易买入证券的，申报数量应当为 100股（份）或其整数倍。卖出证券时，余额不足 100 股（份）部分，应当一次性申报卖出"
+    },
+    "price_limit_pct": {
+      "value": 0.1,
+      "status": "VERIFIED",
+      "source": "szse_trading_rules_2026",
+      "article": "3.3.13",
+      "quote": "基金的价格涨跌幅限制比例为 10%。跟踪指数成份股仅为创业板股票或其他实行 20%涨跌幅限制股票的指数型交易型开放式基金……价格涨跌幅限制比例为 20%",
+      "applicability": "中证 A50 指数成份股不只是创业板或 20% 涨跌幅股票，因此适用 10%"
+    },
+    "limit_price_formula": {
+      "status": "VERIFIED",
+      "source": "szse_trading_rules_2026",
+      "article": "3.3.14, 3.3.19",
+      "quote": "涨跌幅限制价格=前收盘价×（1±涨跌幅限制比例）……按照四舍五入原则取至申报价格最小变动单位。涨跌幅限制价格与前收盘价之差……的绝对值低于申报价格最小变动单位的，以前收盘价……增减一个申报价格最小变动单位计算"
+    },
+    "ex_dividend": {
+      "status": "VERIFIED",
+      "source": "szse_trading_rules_2026",
+      "article": "4.4.1-4.4.3",
+      "quote": "本所在权益登记日……次一交易日对该证券作除权除息处理……除权（息)参考价＝〔（前收盘价-现金红利）+配股价格×股份变动比例〕÷（1+股份变动比例）……除权（息）日证券买卖，按除权（息）参考价作为计算涨跌幅度的基准"
+    },
+    "settlement_t_plus_1": {
+      "value": 1,
+      "status": "VERIFIED",
+      "source": "szse_trading_rules_2026",
+      "article": "3.1.4, 3.1.5",
+      "quote": "投资者买入的证券，在交收前不得卖出，但实行回转交易的除外……下列证券品种实行当日回转交易：（一）债券交易型开放式基金；（二）上市交易的货币市场基金；（三）黄金交易型开放式基金；（四）跨境……；（五）商品期货交易型开放式基金",
+      "corroboration": "szse_investor_guide_2021：“T日买入的ETF T+1日方可卖出”；“对资金仍然实行‘T+0’”"
+    },
+    "stamp_duty": {
+      "value": 0.0,
+      "status": "VERIFIED",
+      "source": "szse_investor_guide_2021",
+      "quote": "无需缴纳印花税"
+    },
+    "exchange_handling_fee": {
+      "value": 4e-05,
+      "status": "VERIFIED",
+      "source": "szse_fee_schedule",
+      "quote": "按成交额双边收取0.04‰（债券ETF、货币ETF暂免收取证券交易经手费）",
+      "note": "通常包含在券商佣金内，是否另收以券商对账单为准"
+    },
+    "transfer_fee": {
+      "value": null,
+      "status": "UNVERIFIED",
+      "note": "交易所收费表与投教指南均未列示 ETF 二级市场过户费；作为费用配置项处理，以券商对账单为准"
+    }
+  },
+  "exchange": "sz"
+}
