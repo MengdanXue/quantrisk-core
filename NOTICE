@@ -9,12 +9,9 @@ strategy, factor and valuation modules from QuantRiskPro") copied 85 Python
 files under src/quantrisk/{indicators,strategies,factor_research,valuation}
 from TraderX (product name "QuantRiskPro V2.0"), directory
 backend-python/src at revision 156d265e. TraderX is a trading-management
-system prototype the author wrote alone in 2025-2026, prompted by a remote
-freelance enquiry that was never concluded: no contract was signed, no
-payment was made and nothing was delivered or accepted, so no rights were
-transferred. The TraderX repository stays private because it also holds the
-enquirer's requirement documents and data files; none of that material is
-included here. The TraderX repository carries an MIT License file with the
+system prototype the author wrote alone in 2025-2026. The TraderX repository
+is private; none of its documents or data files are included here. The TraderX
+repository carries an MIT License file with the
 notice "Copyright (c) 2025 TraderX Team" (a name the author used for that
 project). Code in TraderX that was not written by
 the author (two valuation calculators) and modules bound to its private
